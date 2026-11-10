@@ -201,8 +201,19 @@ cmd_build() {
   [ "$ENABLE_LTO" = "true" ]   && bazel_args="${bazel_args} --copt=-flto --linkopt=-flto"
   [ "$ENABLE_POLLY" = "true" ] && bazel_args="${bazel_args} --copt=-mllvm --copt=-polly --copt=-mllvm --copt=-polly-vectorizer=stripmine"
 
-  # 6) 编译
-  ( cd "$KP" && ./build_with_bazel.py -t "$CPUD" gki --config=stamp --linkopt="-fuse-ld=lld" $bazel_args )
+  # 6) 编译：优先用厂商封装脚本（manifest README 指定入口），失败再回落 build_with_bazel.py
+  export OPLUS_FEATURES="${OPLUS_FEATURES:-OPLUS_FEATURE_BSP_DRV_INJECT_TEST=1}"
+  local entry="${BUILD_ENTRY:-oplus}"
+  local oplus_script="${KP}/oplus/build/oplus_build_kernel.sh"
+  if [ "$entry" = "oplus" ] && [ -x "$oplus_script" ]; then
+    log "编译入口：oplus_build_kernel.sh ${CPUD} perf"
+    ( cd "$KP" && ./oplus/build/oplus_build_kernel.sh "$CPUD" perf ) \
+      || { log "oplus 入口失败，回落 build_with_bazel.py"; \
+           ( cd "$KP" && ./build_with_bazel.py -t "$CPUD" gki --config=stamp --linkopt="-fuse-ld=lld" $bazel_args ); }
+  else
+    log "编译入口：build_with_bazel.py -t ${CPUD} gki"
+    ( cd "$KP" && ./build_with_bazel.py -t "$CPUD" gki --config=stamp --linkopt="-fuse-ld=lld" $bazel_args )
+  fi
 
   local dist="${WS}/out/msm-kernel-${CPUD}-gki/dist"
   [ -d "$dist" ] || die "编译产物目录不存在：$dist"

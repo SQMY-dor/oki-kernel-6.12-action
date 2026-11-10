@@ -68,6 +68,12 @@ on:
         required: false
         default: false
         type: boolean
+      build_entry:
+        description: '编译入口（oplus=厂商脚本，bazel=直接用 build_with_bazel.py）'
+        required: true
+        default: oplus
+        type: choice
+        options: ['oplus', 'bazel']
       susfs_strict:
         description: '补丁有 reject 时是否直接失败（关=宽松继续，开=严格）'
         required: true
@@ -106,6 +112,7 @@ jobs:
       ENABLE_LTO: ${{ github.event.inputs.enable_lto }}
       ENABLE_POLLY: ${{ github.event.inputs.enable_polly }}
       ENABLE_O3: ${{ github.event.inputs.enable_o3 }}
+      BUILD_ENTRY: ${{ github.event.inputs.build_entry }}
       SUSFS_STRICT: ${{ github.event.inputs.susfs_strict }}
       VALIDATE_ONLY: ${{ github.event.inputs.validate_only }}
 
