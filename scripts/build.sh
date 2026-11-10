@@ -207,7 +207,7 @@ cmd_build() {
   local oplus_script="${KP}/oplus/build/oplus_build_kernel.sh"
   if [ "$entry" = "oplus" ] && [ -x "$oplus_script" ]; then
     log "编译入口：oplus_build_kernel.sh ${CPUD} perf"
-    ( cd "$KP" && ./oplus/build/oplus_build_kernel.sh "$CPUD" perf ) \
+    ( cd "$WS" && ./kernel_platform/oplus/build/oplus_build_kernel.sh "$CPUD" perf ) \
       || { log "oplus 入口失败，回落 build_with_bazel.py"; \
            ( cd "$KP" && ./build_with_bazel.py -t "$CPUD" gki --config=stamp --linkopt="-fuse-ld=lld" $bazel_args ); }
   else
