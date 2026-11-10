@@ -50,6 +50,17 @@ remote_branch_exists() {
   GIT_TERMINAL_PROMPT=0 timeout 60 git ls-remote --heads "$repo" "$branch" 2>/dev/null | grep -q "refs/heads/${branch}$"
 }
 
+# auto 模式下参与试补丁的分支清单（主分支 + dev 变体）
+susfs_branch_candidates() {
+  if [ "$SUSFS_BRANCH_INPUT" != "auto" ] && [ -n "$SUSFS_BRANCH_INPUT" ]; then
+    echo "$SUSFS_BRANCH_INPUT"; return
+  fi
+  local base
+  base="$(susfs_candidates "$KERNEL_VERSION" | awk '{print $1}')"
+  [ -n "$base" ] || die "不支持的内核版本 $KERNEL_VERSION"
+  echo "$base ${base}-dev"
+}
+
 resolve_susfs_branch() {
   if [ "$SUSFS_BRANCH_INPUT" != "auto" ] && [ -n "$SUSFS_BRANCH_INPUT" ]; then
     log "SUSFS 分支：使用手动指定值 $SUSFS_BRANCH_INPUT"
@@ -122,11 +133,30 @@ cmd_build() {
   [ -d "$KP" ] || die "找不到内核工作区 $KP（先 repo init/sync）"
 
   local br patch_dir setup_url
-  br="$(resolve_susfs_branch)"
   setup_url="$(ksu_setup_url)"
   log "内核源码：$KP"
   log "KernelSU：$KSU_VARIANT"
-  log "SUSFS：$SUSFS_REPO @ $br"
+
+  # 2a) 用 patch --dry-run 在候选分支里挑补丁最干净的一个
+  local best_br="" best_fail=999 tmp_root br cand fails
+  tmp_root="$(mktemp -d)"
+  for cand in $(susfs_branch_candidates); do
+    if ! git clone --depth 1 -b "$cand" "$SUSFS_REPO" "${tmp_root}/${cand}" >/dev/null 2>&1; then
+      log "候选 $cand：分支不可用，跳过"; continue
+    fi
+    local pn
+    pn="$(find_susfs_patch "${tmp_root}/${cand}/kernel_patches" "$cand")" || { log "候选 $cand：没有 50_*.patch，跳过"; continue; }
+    fails="$( cd "$KP/common" && patch -p1 --dry-run -F3 --forward < "${tmp_root}/${cand}/kernel_patches/${pn}" 2>&1 | grep -cE "FAILED|find file" || true )"
+    log "候选 $cand：$pn → 失败块 $fails"
+    if [ "$fails" -lt "$best_fail" ]; then best_fail="$fails"; best_br="$cand"; fi
+    if [ "$fails" = "0" ]; then break; fi
+  done
+  [ -n "$best_br" ] || die "没有可用的 SUSFS 分支（候选：$(susfs_branch_candidates)）"
+  br="$best_br"
+  log "SUSFS：$SUSFS_REPO @ $br（试补丁后选择，失败块=$best_fail）"
+  if [ "$best_fail" != "0" ] && [ "${SUSFS_STRICT:-false}" = "true" ]; then
+    die "所有候选分支都有 reject（最少 $best_fail 块），SUSFS_STRICT=true 终止"
+  fi
 
   # 1) KernelSU 接入（不同分支克隆出的目录名不同：KernelSU / KernelSU-Next / SukiSU-Ultra）
   ( cd "$KP" && curl -LSs "$setup_url" | bash - )
@@ -143,8 +173,8 @@ cmd_build() {
   # 2) SUSFS 源码与补丁
   local susfs_dir="${ROOT}/susfs4ksu"
   rm -rf "$susfs_dir"
-  git clone --depth 1 -b "$br" "$SUSFS_REPO" "$susfs_dir" \
-    || die "克隆 SUSFS 失败：$SUSFS_REPO @ $br"
+  cp -r "${tmp_root}/${br}" "$susfs_dir" || die "准备 SUSFS 源码失败"
+  rm -rf "$tmp_root"
   patch_dir="${susfs_dir}/kernel_patches"
   patch_name="$(find_susfs_patch "$patch_dir" "$br")" \
     || die "SUSFS 分支 $br 里找不到 50_*.patch"
@@ -155,7 +185,9 @@ cmd_build() {
   cp -r "${patch_dir}/include/linux/." "${KP}/common/include/linux/" 2>/dev/null || true
 
   local patch_ok=true
-  ( cd "${KP}/common" && patch -p1 --forward -F3 < "${patch_name}" ) >"${ROOT}/susfs-patch.log" 2>&1 || patch_ok=false
+  ( cd "${KP}/common" && git apply --3way --whitespace=nowarn "${patch_name}" ) >"${ROOT}/susfs-patch.log" 2>&1 \
+    || ( cd "${KP}/common" && patch -p1 --forward -F3 < "${patch_name}" >>"${ROOT}/susfs-patch.log" 2>&1 ) \
+    || patch_ok=false
   local rejects
   rejects="$(find "${KP}/common" -name '*.rej' 2>/dev/null | wc -l | tr -d ' ')"
   if [ "$patch_ok" = true ] && [ "$rejects" = "0" ]; then
@@ -215,7 +247,9 @@ cmd_build() {
     ( cd "$KP" && ./build_with_bazel.py -t "$CPUD" gki --config=stamp --linkopt="-fuse-ld=lld" $bazel_args )
   fi
 
-  local dist="${WS}/out/msm-kernel-${CPUD}-gki/dist"
+  local dist
+  dist="$(find "$WS/out" -maxdepth 3 -type d -name dist 2>/dev/null | grep -E "msm-kernel-${CPUD}" | head -1 || true)"
+  [ -n "$dist" ] || dist="${WS}/out/msm-kernel-${CPUD}-gki/dist"
   [ -d "$dist" ] || die "编译产物目录不存在：$dist"
   log "编译完成：$dist"
   ls -lh "$dist" | sed 's/^/[oki]   /'
@@ -223,7 +257,9 @@ cmd_build() {
 
 # ── 打包 AnyKernel3 ───────────────────────────────────────────────────────
 cmd_package() {
-  local dist="${WS}/out/msm-kernel-${CPUD}-gki/dist"
+  local dist
+  dist="$(find "$WS/out" -maxdepth 3 -type d -name dist 2>/dev/null | grep -E "msm-kernel-${CPUD}" | head -1 || true)"
+  [ -n "$dist" ] || dist="${WS}/out/msm-kernel-${CPUD}-gki/dist"
   [ -d "$dist" ] || die "找不到产物目录 $dist"
 
   local ak="${ROOT}/AnyKernel3"
