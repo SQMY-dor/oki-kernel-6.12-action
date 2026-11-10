@@ -1,0 +1,180 @@
+name: Build OKI Kernel (6.12 / SUSFS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_branch:
+        description: 'OnePlusOSS/kernel_manifest 分支（平台）'
+        required: true
+        default: 'oneplus/sm8750'
+        type: string
+      manifest_file:
+        description: '设备 manifest（不带 .xml）'
+        required: true
+        default: 'oneplus_13t'
+        type: choice
+        options:
+          - oneplus_13t
+          - oneplus_13t_b
+          - oneplus_13
+          - oneplus_13_b
+          - oneplus_13_global
+          - oneplus_13s
+          - oneplus_13s_b
+          - oneplus_ace5_pro
+          - oneplus_ace5_pro_b
+          - oneplus_ace_6
+          - oneplus_pad_3
+          - oneplus_pad_3_b
+      cpud:
+        description: '平台代号（build target，如 sun）'
+        required: true
+        default: 'sun'
+        type: string
+      kernel_version:
+        description: '内核版本（用于自动选择 SUSFS 分支树）'
+        required: true
+        default: '6.12'
+        type: choice
+        options: ['6.12', '6.6', '6.1', '5.15', '5.10', '5.4', '4.19', '4.14', '4.9']
+      susfs_repo:
+        description: 'SUSFS 源码仓库（可换成自己的镜像/fork）'
+        required: true
+        default: 'https://gitlab.com/simonpunk/susfs4ksu'
+        type: string
+      susfs_branch:
+        description: 'SUSFS 分支；auto = 按 kernel_version 自动匹配分支树'
+        required: true
+        default: 'auto'
+        type: string
+      ksu_variant:
+        description: 'KernelSU 分支'
+        required: true
+        default: 'KernelSU-Next'
+        type: choice
+        options: ['KernelSU', 'KernelSU-Next', 'SukiSU-Ultra']
+      enable_lto:
+        description: 'Full LTO'
+        required: false
+        default: false
+        type: boolean
+      enable_polly:
+        description: 'Polly'
+        required: false
+        default: false
+        type: boolean
+      enable_o3:
+        description: 'O3 优化'
+        required: false
+        default: false
+        type: boolean
+      validate_only:
+        description: '只解析参数（不编译，用于验证配置）'
+        required: true
+        default: false
+        type: boolean
+      make_release:
+        description: '编译成功后发布 Release'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.event.inputs.manifest_file || 'manual' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      MANIFEST_BRANCH: ${{ github.event.inputs.manifest_branch }}
+      MANIFEST_FILE: ${{ github.event.inputs.manifest_file }}
+      CPUD: ${{ github.event.inputs.cpud }}
+      KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
+      SUSFS_REPO: ${{ github.event.inputs.susfs_repo }}
+      SUSFS_BRANCH_INPUT: ${{ github.event.inputs.susfs_branch }}
+      KSU_VARIANT: ${{ github.event.inputs.ksu_variant }}
+      ENABLE_LTO: ${{ github.event.inputs.enable_lto }}
+      ENABLE_POLLY: ${{ github.event.inputs.enable_polly }}
+      ENABLE_O3: ${{ github.event.inputs.enable_o3 }}
+      VALIDATE_ONLY: ${{ github.event.inputs.validate_only }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            repo git curl patch zip unzip bc rsync python3 python3-pip \
+            cpio lld libssl-dev build-essential ccache
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p kernel_workspace
+
+      - name: Resolve build config (SUSFS branch)
+        id: resolve
+        run: |
+          bash scripts/build.sh --resolve | tee resolve.log
+          cat resolve.log >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(SUSFS_BRANCH|SUSFS_PATCH|KSU_SETUP_URL)=' resolve.log >> "$GITHUB_OUTPUT"
+
+      - name: Validate only
+        if: ${{ github.event.inputs.validate_only == 'true' }}
+        run: |
+          echo "validate_only=true：参数解析完成，跳过编译。" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Init and sync kernel source
+        working-directory: kernel_workspace
+        run: |
+          repo init -u https://github.com/OnePlusOSS/kernel_manifest.git \
+            -b "refs/heads/${MANIFEST_BRANCH}" \
+            -m "${MANIFEST_FILE}.xml" \
+            --depth=1 --repo-rev=v2.16
+          repo sync -c -j"$(nproc)" --no-tags --fail-fast --force-sync
+
+      - name: Build kernel
+        run: bash scripts/build.sh --build
+
+      - name: Package AnyKernel3
+        if: ${{ github.event.inputs.validate_only != 'true' }}
+        run: bash scripts/build.sh --package
+
+      - name: Upload artifact
+        if: ${{ github.event.inputs.validate_only != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: oki-${{ github.event.inputs.manifest_file }}-${{ github.event.inputs.ksu_variant }}-susfs
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish release
+        if: ${{ github.event.inputs.make_release == 'true' && github.event.inputs.validate_only != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.MANIFEST_FILE }}-${{ env.KSU_VARIANT }}-${{ github.run_number }}
+          name: OKI ${{ env.MANIFEST_FILE }} · ${{ env.KSU_VARIANT }} · SUSFS
+          body: |
+            - 设备 manifest: `${{ env.MANIFEST_FILE }}`（分支 `${{ env.MANIFEST_BRANCH }}`）
+            - 内核版本: `${{ env.KERNEL_VERSION }}`
+            - SUSFS: `${{ env.SUSFS_REPO }}` @ `${{ steps.resolve.outputs.SUSFS_BRANCH }}`
+            - KernelSU: `${{ env.KSU_VARIANT }}`
+            - 构建: 运行 #${{ github.run_number }}
+          files: dist/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
