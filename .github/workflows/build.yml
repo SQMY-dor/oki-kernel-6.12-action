@@ -139,6 +139,7 @@ jobs:
           exit 0
 
       - name: Init and sync kernel source
+        if: ${{ github.event.inputs.validate_only != 'true' }}
         working-directory: kernel_workspace
         run: |
           repo init -u https://github.com/OnePlusOSS/kernel_manifest.git \
@@ -148,6 +149,7 @@ jobs:
           repo sync -c -j"$(nproc)" --no-tags --fail-fast --force-sync
 
       - name: Build kernel
+        if: ${{ github.event.inputs.validate_only != 'true' }}
         run: bash scripts/build.sh --build
 
       - name: Package AnyKernel3

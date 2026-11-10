@@ -109,9 +109,17 @@ cmd_build() {
   log "KernelSU：$KSU_VARIANT"
   log "SUSFS：$SUSFS_REPO @ $br"
 
-  # 1) KernelSU 接入
+  # 1) KernelSU 接入（不同分支克隆出的目录名不同：KernelSU / KernelSU-Next / SukiSU-Ultra）
   ( cd "$KP" && curl -LSs "$setup_url" | bash - )
-  [ -d "$KP/KernelSU" ] || die "KernelSU 接入失败（$KP/KernelSU 不存在）"
+  local ksu_dir=""
+  for cand in KernelSU KernelSU-Next SukiSU-Ultra; do
+    if [ -d "${KP}/${cand}" ]; then ksu_dir="${KP}/${cand}"; break; fi
+  done
+  if [ -z "$ksu_dir" ]; then
+    ksu_dir="$(find "$KP" -maxdepth 2 -type d -name 'KernelSU*' -o -maxdepth 2 -type d -name 'SukiSU*' 2>/dev/null | head -1 || true)"
+  fi
+  [ -n "$ksu_dir" ] || die "KernelSU 接入失败（$KP 下找不到 KernelSU*/SukiSU* 目录）"
+  log "KernelSU 目录：$ksu_dir"
 
   # 2) SUSFS 源码与补丁
   local susfs_dir="${ROOT}/susfs4ksu"
@@ -132,8 +140,8 @@ cmd_build() {
   # 3) 让 KernelSU 支持 SUSFS（补丁随分支提供，缺失则跳过并告警）
   local ksu_patch="${patch_dir}/KernelSU/10_enable_susfs_for_ksu.patch"
   if [ -f "$ksu_patch" ]; then
-    cp "$ksu_patch" "${KP}/KernelSU/"
-    ( cd "${KP}/KernelSU" && patch -p1 --forward < 10_enable_susfs_for_ksu.patch ) \
+    cp "$ksu_patch" "${ksu_dir}/"
+    ( cd "${ksu_dir}" && patch -p1 --forward < 10_enable_susfs_for_ksu.patch ) \
       || log "警告：KernelSU 侧 SUSFS 补丁未完全应用（版本差异，可能仍可用）"
   else
     log "提示：该 SUSFS 分支没有 KernelSU 侧补丁，跳过"
