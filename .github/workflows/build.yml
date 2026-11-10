@@ -138,6 +138,20 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p kernel_workspace
 
+      - name: Normalize manifest by kernel version
+        id: mf
+        run: |
+          MF="$MANIFEST_FILE"
+          if [ "$KERNEL_VERSION" = "6.12" ] && [ "${MF%_b}" = "$MF" ]; then
+            echo "::notice::内核 6.12 需要 Android16 manifest，${MF} → ${MF}_b"
+            MF="${MF}_b"
+          fi
+          if [ "$KERNEL_VERSION" != "6.12" ] && [ "${MF%_b}" != "$MF" ]; then
+            echo "::notice::内核 ${KERNEL_VERSION} 用 Android15 manifest，${MF} → ${MF%_b}"
+            MF="${MF%_b}"
+          fi
+          echo "manifest_file=$MF" >> "$GITHUB_OUTPUT"
+
       - name: Resolve build config (SUSFS branch)
         id: resolve
         run: |
@@ -157,7 +171,7 @@ jobs:
         run: |
           repo init -u https://github.com/OnePlusOSS/kernel_manifest.git \
             -b "refs/heads/${MANIFEST_BRANCH}" \
-            -m "${MANIFEST_FILE}.xml" \
+            -m "${{ steps.mf.outputs.manifest_file }}.xml" \
             --depth=1 --repo-rev=v2.16
           repo sync -c -j"$(nproc)" --no-tags --fail-fast --force-sync
 
@@ -167,13 +181,15 @@ jobs:
 
       - name: Package AnyKernel3
         if: ${{ github.event.inputs.validate_only != 'true' }}
+        env:
+          MANIFEST_FILE: ${{ steps.mf.outputs.manifest_file }}
         run: bash scripts/build.sh --package
 
       - name: Upload artifact
         if: ${{ github.event.inputs.validate_only != 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: oki-${{ github.event.inputs.manifest_file }}-${{ github.event.inputs.ksu_variant }}-susfs
+          name: oki-${{ steps.mf.outputs.manifest_file }}-${{ github.event.inputs.ksu_variant }}-susfs
           path: dist/*.zip
           if-no-files-found: error
           retention-days: 14
@@ -182,10 +198,10 @@ jobs:
         if: ${{ github.event.inputs.make_release == 'true' && github.event.inputs.validate_only != 'true' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.MANIFEST_FILE }}-${{ env.KSU_VARIANT }}-${{ github.run_number }}
-          name: OKI ${{ env.MANIFEST_FILE }} · ${{ env.KSU_VARIANT }} · SUSFS
+          tag_name: ${{ steps.mf.outputs.manifest_file }}-${{ env.KSU_VARIANT }}-${{ github.run_number }}
+          name: OKI ${{ steps.mf.outputs.manifest_file }} · ${{ env.KSU_VARIANT }} · SUSFS
           body: |
-            - 设备 manifest: `${{ env.MANIFEST_FILE }}`（分支 `${{ env.MANIFEST_BRANCH }}`）
+            - 设备 manifest: `${{ steps.mf.outputs.manifest_file }}`（分支 `${{ env.MANIFEST_BRANCH }}`）
             - 内核版本: `${{ env.KERNEL_VERSION }}`
             - SUSFS: `${{ env.SUSFS_REPO }}` @ `${{ steps.resolve.outputs.SUSFS_BRANCH }}`
             - KernelSU: `${{ env.KSU_VARIANT }}`
