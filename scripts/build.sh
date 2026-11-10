@@ -79,11 +79,30 @@ ksu_setup_url() {
   esac
 }
 
+# 在 SUSFS 分支里定位主补丁：dev 分支的补丁文件名不带 -dev 后缀，
+# 因此按「全名 → 去 -dev → 任意 50_*.patch」三级回退。
+find_susfs_patch() {
+  local dir="$1" br="$2"
+  local cands=("50_add_susfs_in_${br}.patch" "50_add_susfs_in_${br%-dev}.patch")
+  local c
+  for c in "${cands[@]}"; do
+    [ -f "${dir}/${c}" ] && { echo "$c"; return 0; }
+  done
+  c="$(ls "${dir}"/50_*.patch 2>/dev/null | head -1 || true)"
+  [ -n "$c" ] && { basename "$c"; return 0; }
+  return 1
+}
+
 cmd_resolve() {
   local br patch url
   br="$(resolve_susfs_branch)"
-  patch="kernel_patches/50_add_susfs_in_${br}.patch"
   url="$(ksu_setup_url)"
+  tmp_dir="$(mktemp -d)"
+  git clone --depth 1 -b "$br" "$SUSFS_REPO" "${tmp_dir}/s" >/dev/null 2>&1 \
+    || die "克隆 SUSFS 失败：$SUSFS_REPO @ $br"
+  patch="kernel_patches/$(find_susfs_patch "${tmp_dir}/s/kernel_patches" "$br")" \
+    || die "SUSFS 分支 $br 里找不到 50_*.patch"
+  rm -rf "$tmp_dir"
   cat <<EOF
 MANIFEST_BRANCH=${MANIFEST_BRANCH:-}
 MANIFEST_FILE=${MANIFEST_FILE}
@@ -127,15 +146,28 @@ cmd_build() {
   git clone --depth 1 -b "$br" "$SUSFS_REPO" "$susfs_dir" \
     || die "克隆 SUSFS 失败：$SUSFS_REPO @ $br"
   patch_dir="${susfs_dir}/kernel_patches"
-  [ -f "${patch_dir}/50_add_susfs_in_${br}.patch" ] \
-    || die "SUSFS 分支 $br 缺少 50_add_susfs_in_${br}.patch"
+  patch_name="$(find_susfs_patch "$patch_dir" "$br")" \
+    || die "SUSFS 分支 $br 里找不到 50_*.patch"
+  log "SUSFS 补丁：$patch_name"
 
-  cp "${patch_dir}/50_add_susfs_in_${br}.patch" "${KP}/common/"
+  cp "${patch_dir}/${patch_name}" "${KP}/common/"
   cp -r "${patch_dir}/fs/." "${KP}/common/fs/" 2>/dev/null || true
   cp -r "${patch_dir}/include/linux/." "${KP}/common/include/linux/" 2>/dev/null || true
 
-  ( cd "${KP}/common" && patch -p1 --forward < "50_add_susfs_in_${br}.patch" ) \
-    || die "SUSFS 主补丁应用失败"
+  local patch_ok=true
+  ( cd "${KP}/common" && patch -p1 --forward -F3 < "${patch_name}" ) >"${ROOT}/susfs-patch.log" 2>&1 || patch_ok=false
+  local rejects
+  rejects="$(find "${KP}/common" -name '*.rej' 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "$patch_ok" = true ] && [ "$rejects" = "0" ]; then
+    log "SUSFS 主补丁干净应用"
+  else
+    log "SUSFS 主补丁有 ${rejects} 处 reject（补丁与 OnePlus 源码存在版本差异）"
+    tail -20 "${ROOT}/susfs-patch.log" | sed 's/^/[oki]   /' >&2 || true
+    if [ "${SUSFS_STRICT:-false}" = "true" ]; then
+      die "SUSFS_STRICT=true：存在 reject，终止（可改用 -dev 分支或放宽）"
+    fi
+    log "宽松模式继续：reject 已记录，编译可能失败，失败时请换 susfs_branch"
+  fi
 
   # 3) 让 KernelSU 支持 SUSFS（补丁随分支提供，缺失则跳过并告警）
   local ksu_patch="${patch_dir}/KernelSU/10_enable_susfs_for_ksu.patch"

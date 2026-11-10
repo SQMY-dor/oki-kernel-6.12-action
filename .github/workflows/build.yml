@@ -68,6 +68,11 @@ on:
         required: false
         default: false
         type: boolean
+      susfs_strict:
+        description: '补丁有 reject 时是否直接失败（关=宽松继续，开=严格）'
+        required: true
+        default: false
+        type: boolean
       validate_only:
         description: '只解析参数（不编译，用于验证配置）'
         required: true
@@ -101,6 +106,7 @@ jobs:
       ENABLE_LTO: ${{ github.event.inputs.enable_lto }}
       ENABLE_POLLY: ${{ github.event.inputs.enable_polly }}
       ENABLE_O3: ${{ github.event.inputs.enable_o3 }}
+      SUSFS_STRICT: ${{ github.event.inputs.susfs_strict }}
       VALIDATE_ONLY: ${{ github.event.inputs.validate_only }}
 
     steps:
