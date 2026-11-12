@@ -12,7 +12,7 @@ Actions → **Build OKI Kernel (6.12 / SUSFS)** → Run workflow：
 | `manifest_branch` | `oneplus/sm8750` | OnePlusOSS/kernel_manifest 平台分支 |
 | `manifest_file` | `oneplus_13t` | 设备 manifest（不带 `.xml`） |
 | `cpud` | `sun` | 平台 build target |
-| `kernel_version` | `6.12` | 决定 SUSFS 分支树 |
+| `kernel_version` | `auto` | 决定 SUSFS 分支树；auto 在同步源码后读 `common/Makefile`。注意 sm8750（一加 13/13T 等）即使用 `_b` manifest 也是 6.6 内核，6.12 需 `oneplus/sm8850` |
 | `susfs_repo` | `https://gitlab.com/simonpunk/susfs4ksu` | 可换成任意镜像/fork |
 | `susfs_branch` | `auto` | `auto` = 按内核版本自动匹配；也可手填 |
 | `ksu_variant` | `KernelSU-Next` | KernelSU / KernelSU-Next / SukiSU-Ultra |
