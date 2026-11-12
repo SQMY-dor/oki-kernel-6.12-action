@@ -17,7 +17,16 @@ LOG_PREFIX="[oki]"
 log()  { printf '%s %s\n' "$LOG_PREFIX" "$*" >&2; }
 die()  { printf '%s ERROR: %s\n' "$LOG_PREFIX" "$*" >&2; exit 1; }
 
-KERNEL_VERSION="${KERNEL_VERSION:-6.12}"
+# 从已同步的源码树读取真实内核版本（common/Makefile 的 VERSION.PATCHLEVEL）。
+# 注意：Android16 manifest（*_b）不等于 6.12 内核，例如 sm8750（一加 13/13T）
+# 的 _b 分支仍是 6.6；只有 sm8850 等新平台才是 6.12。
+detect_kernel_version() {
+  local mk="${KP}/common/Makefile"
+  [ -f "$mk" ] || return 1
+  awk '/^VERSION *=/ { v=$3 } /^PATCHLEVEL *=/ { p=$3 } END { if (v != "" && p != "") print v"."p }' "$mk"
+}
+
+KERNEL_VERSION="${KERNEL_VERSION:-auto}"
 SUSFS_REPO="${SUSFS_REPO:-https://gitlab.com/simonpunk/susfs4ksu}"
 SUSFS_BRANCH_INPUT="${SUSFS_BRANCH_INPUT:-auto}"
 KSU_VARIANT="${KSU_VARIANT:-KernelSU-Next}"
@@ -106,6 +115,20 @@ find_susfs_patch() {
 
 cmd_resolve() {
   local br patch url
+  if [ "$KERNEL_VERSION" = "auto" ] && [ "$SUSFS_BRANCH_INPUT" = "auto" ]; then
+    cat <<EOT
+MANIFEST_BRANCH=${MANIFEST_BRANCH:-}
+MANIFEST_FILE=${MANIFEST_FILE}
+CPUD=${CPUD}
+KERNEL_VERSION=auto（同步源码后从 common/Makefile 读取）
+SUSFS_REPO=${SUSFS_REPO}
+SUSFS_BRANCH=auto
+KSU_VARIANT=${KSU_VARIANT}
+KSU_SETUP_URL=$(ksu_setup_url)
+LTO=${ENABLE_LTO} POLLY=${ENABLE_POLLY} O3=${ENABLE_O3}
+EOT
+    return
+  fi
   br="$(resolve_susfs_branch)"
   url="$(ksu_setup_url)"
   tmp_dir="$(mktemp -d)"
@@ -136,6 +159,24 @@ cmd_build() {
   setup_url="$(ksu_setup_url)"
   log "内核源码：$KP"
   log "KernelSU：$KSU_VARIANT"
+
+  # 0) 以源码树里的真实版本为准，避免把 6.12 的 SUSFS 补丁打进 6.6 源码
+  local real_kv
+  real_kv="$(detect_kernel_version)" || die "无法从 ${KP}/common/Makefile 读取内核版本"
+  [ -n "$real_kv" ] || die "无法从 ${KP}/common/Makefile 读取内核版本"
+  log "源码树内核版本：${real_kv}"
+  if [ "$KERNEL_VERSION" = "auto" ]; then
+    KERNEL_VERSION="$real_kv"
+  elif [ "$KERNEL_VERSION" != "$real_kv" ]; then
+    if [ "$SUSFS_BRANCH_INPUT" = "auto" ] || [ -z "$SUSFS_BRANCH_INPUT" ]; then
+      echo "::warning::输入 kernel_version=${KERNEL_VERSION}，但 manifest 同步下来的是 ${real_kv}；按 ${real_kv} 选择 SUSFS 分支" >&2
+      KERNEL_VERSION="$real_kv"
+    else
+      die "输入 kernel_version=${KERNEL_VERSION} 与源码树 ${real_kv} 不符，且手动指定了 susfs_branch=${SUSFS_BRANCH_INPUT}；请改用匹配 ${real_kv} 的分支或换 manifest"
+    fi
+  fi
+  [ -n "$(susfs_candidates "$KERNEL_VERSION")" ] || die "不支持的内核版本 $KERNEL_VERSION"
+  echo "KERNEL_VERSION=${KERNEL_VERSION}" >> "${GITHUB_ENV:-/dev/null}"
 
   # 2a) 用 patch --dry-run 在候选分支里挑补丁最干净的一个
   local best_br="" best_fail=999 tmp_root br cand fails

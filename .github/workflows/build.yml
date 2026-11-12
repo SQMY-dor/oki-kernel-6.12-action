@@ -26,17 +26,22 @@ on:
           - oneplus_ace_6
           - oneplus_pad_3
           - oneplus_pad_3_b
+          # 以下为 sm8850 平台（真正的 6.12 内核），需把 manifest_branch 改为 oneplus/sm8850
+          - oneplus_15
+          - oneplus_15t
+          - oneplus_pad_4
+          - oneplus_pad_3_pro
       cpud:
         description: '平台代号（build target，如 sun）'
         required: true
         default: 'sun'
         type: string
       kernel_version:
-        description: '内核版本（用于自动选择 SUSFS 分支树）'
+        description: '内核版本；auto = 同步源码后读 common/Makefile（推荐）'
         required: true
-        default: '6.12'
+        default: 'auto'
         type: choice
-        options: ['6.12', '6.6', '6.1', '5.15', '5.10', '5.4', '4.19', '4.14', '4.9']
+        options: ['auto', '6.12', '6.6', '6.1', '5.15', '5.10', '5.4', '4.19', '4.14', '4.9']
       susfs_repo:
         description: 'SUSFS 源码仓库（可换成自己的镜像/fork）'
         required: true
@@ -138,18 +143,15 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p kernel_workspace
 
-      - name: Normalize manifest by kernel version
+      - name: Check manifest exists
         id: mf
         run: |
+          # 不再按 kernel_version 改写 manifest：Android16（_b）不代表 6.12，
+          # sm8750 的 _b 仍是 6.6 内核，真实版本在同步后由 build.sh 检测。
           MF="$MANIFEST_FILE"
-          if [ "$KERNEL_VERSION" = "6.12" ] && [ "${MF%_b}" = "$MF" ]; then
-            echo "::notice::内核 6.12 需要 Android16 manifest，${MF} → ${MF}_b"
-            MF="${MF}_b"
-          fi
-          if [ "$KERNEL_VERSION" != "6.12" ] && [ "${MF%_b}" != "$MF" ]; then
-            echo "::notice::内核 ${KERNEL_VERSION} 用 Android15 manifest，${MF} → ${MF%_b}"
-            MF="${MF%_b}"
-          fi
+          url="https://raw.githubusercontent.com/OnePlusOSS/kernel_manifest/${MANIFEST_BRANCH}/${MF}.xml"
+          curl -fsSL -o /dev/null "$url" \
+            || { echo "::error::${MANIFEST_BRANCH} 分支下没有 ${MF}.xml"; exit 1; }
           echo "manifest_file=$MF" >> "$GITHUB_OUTPUT"
 
       - name: Resolve build config (SUSFS branch)
